@@ -4,16 +4,23 @@ import { LADDERS, resolveMetric, applyHint, eventsForLadder } from '../src/metri
 const realVolumes = {
   $pageview: { pre: 11635, post: 646 },
   signup_started: { pre: 612, post: 34 },
-  signup_completed: { pre: 610, post: 33 },
+  signup_completed: { pre: 450, post: 24 },
   trial_created: { pre: 68, post: 4 },
 };
 
 describe('metric ladder', () => {
-  it('picks the closest metric when it has volume in both periods', () => {
-    const r = resolveMetric(LADDERS.onboarding, realVolumes);
-    expect(r.chosen?.numerator).toBe('signup_completed');
-    expect(r.chosen?.denominator).toBe('signup_started');
+  it('picks the closest metric that has volume in both periods', () => {
+    const r = resolveMetric(LADDERS.onboarding, {
+      ...realVolumes,
+      onboarding_screen_viewed: { pre: 300, post: 57 },
+      onboarding_screen_advanced: { pre: 140, post: 27 },
+    });
+    expect(r.chosen?.numerator).toBe('onboarding_screen_advanced');
     expect(r.skipped).toHaveLength(0);
+  });
+
+  it('leads the onboarding ladder with the step-through, the closest possible metric', () => {
+    expect(LADDERS.onboarding[0].denominator).toBe('onboarding_screen_viewed');
   });
 
   it('SKIPS a metric whose events did not exist pre-period, and says why (F5: the Sept 1 case)', () => {
@@ -22,16 +29,7 @@ describe('metric ladder', () => {
       onboarding_screen_viewed: { pre: 0, post: 57 },
       onboarding_screen_advanced: { pre: 0, post: 27 },
     };
-    const ladder = [
-      {
-        name: 'onboarding step-through',
-        numerator: 'onboarding_screen_advanced',
-        denominator: 'onboarding_screen_viewed',
-      },
-      ...LADDERS.onboarding,
-    ];
-
-    const r = resolveMetric(ladder, volumes);
+    const r = resolveMetric(LADDERS.onboarding, volumes);
     expect(r.chosen?.numerator).toBe('signup_completed');
     expect(r.skipped[0].metric.numerator).toBe('onboarding_screen_advanced');
     expect(r.skipped[0].reason).toMatch(/no pre-period volume/i);
@@ -45,7 +43,7 @@ describe('metric ladder', () => {
 
   it('falls through to the revenue metric only when the closer rungs are unusable', () => {
     const volumes = {
-      signup_completed: { pre: 610, post: 33 },
+      signup_completed: { pre: 450, post: 24 },
       trial_created: { pre: 68, post: 4 },
     };
     expect(resolveMetric(LADDERS.onboarding, volumes).chosen?.numerator).toBe('trial_created');
@@ -56,10 +54,16 @@ describe('metric ladder', () => {
     expect(r.skipped[0].reason).toMatch(/not present in this project/);
   });
 
+  it('skips the step-through when the project never emitted those events', () => {
+    const r = resolveMetric(LADDERS.onboarding, realVolumes);
+    expect(r.skipped[0].reason).toMatch(/not present in this project/);
+    expect(r.chosen?.numerator).toBe('signup_completed');
+  });
+
   it('skips a metric with no post-period volume', () => {
-    const volumes = { signup_started: { pre: 612, post: 0 }, signup_completed: { pre: 610, post: 0 }, $pageview: { pre: 11635, post: 646 } };
+    const volumes = { signup_started: { pre: 612, post: 0 }, signup_completed: { pre: 450, post: 0 }, $pageview: { pre: 11635, post: 646 } };
     const r = resolveMetric(LADDERS.onboarding, volumes);
-    expect(r.skipped[0].reason).toMatch(/no post-period volume/);
+    expect(r.skipped[1].reason).toMatch(/no post-period volume/);
     expect(r.chosen?.denominator).toBe('$pageview');
   });
 
@@ -97,6 +101,39 @@ describe('metric_hint', () => {
 describe('eventsForLadder', () => {
   it('deduplicates events across rungs', () => {
     const events = eventsForLadder(LADDERS.onboarding);
-    expect(events).toEqual(['signup_completed', 'signup_started', '$pageview', 'trial_created']);
+    expect(events).toEqual([
+      'onboarding_screen_advanced',
+      'onboarding_screen_viewed',
+      'signup_completed',
+      'signup_started',
+      '$pageview',
+      'trial_created',
+    ]);
+  });
+});
+
+describe('headroom', () => {
+  const saturated = {
+    $pageview: { pre: 11635, post: 646 },
+    signup_started: { pre: 672, post: 40 },
+    signup_completed: { pre: 669, post: 36 },
+    trial_created: { pre: 70, post: 7 },
+  };
+
+  it('skips a near-saturated metric — no change can move a 99.6% rate enough to measure', () => {
+    const r = resolveMetric(LADDERS.onboarding, saturated);
+    expect(r.chosen?.denominator).toBe('$pageview');
+    expect(r.chosen?.numerator).toBe('signup_started');
+    const sat = r.skipped.find((s) => s.metric.numerator === 'signup_completed');
+    expect(sat?.reason).toMatch(/only 0\.4pp of headroom/);
+  });
+
+  it('skips a metric too rare to resolve at any window length', () => {
+    const r = resolveMetric(
+      [{ name: 'rare', numerator: 'trial_created', denominator: '$pageview' }],
+      { $pageview: { pre: 1000000, post: 50000 }, trial_created: { pre: 500, post: 25 } },
+    );
+    expect(r.chosen).toBeNull();
+    expect(r.skipped[0].reason).toMatch(/too rare to resolve/);
   });
 });

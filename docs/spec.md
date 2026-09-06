@@ -226,3 +226,63 @@ categories logged, verdicts returned. Never content, never metrics, never keys.
 
 Since no hosted service is in scope, the destination is user-supplied via
 `CHANGELOG_TELEMETRY_URL`. With telemetry enabled and no URL set, it is a documented no-op.
+
+---
+
+## F8. A metric can be too saturated to grade (found during the live run)
+
+`signup_started` -> `signup_completed` runs at **99.6%** in the reference project. Only 0.4pp
+of headroom exists, so no change can move it by enough to measure — the minimum detectable
+effect (±10.3pp over the test window) exceeded the range the metric can physically occupy.
+
+The volume checks in F5 do not catch this: the events are present and have volume on both
+sides. It is the *rate* that makes the metric useless.
+
+**Decision:** `resolveMetric` skips any rung whose pre-period rate is above
+`SATURATION_MAX = 0.90` or below `NEAR_ZERO_MIN = 0.002`, and states the headroom in the
+skip reason. Discovered only by running against real data; no synthetic fixture would have
+produced a 99.6% funnel step.
+
+---
+
+## Live run — 2026-09-06
+
+Change logged to the real project as annotation **431434**:
+
+```
+[chg:1] Asked onboarding questions first and saved progress before requiring an account
+{"v":1,"category":"onboarding","surface":"/free","metric_hint":"signup_started"}
+```
+
+`hidden_in_user_interface` is confirmed present on the REST annotation model (returned as
+`null`), resolving the open question from Task 2.
+
+Verdict, with the ladder running unhinted so both skips are visible:
+
+```
+1 logged change(s): 1 cannot tell yet
+
+[cannot tell yet] Asked onboarding questions first and saved progress before requiring an account
+  onboarding | /free | 2026-09-01 | annotation 431434
+  metric      $pageview -> signup_started (closest available)
+  skipped     onboarding_screen_viewed -> onboarding_screen_advanced: no pre-period volume — the change
+              appears to have created these events, so there is nothing to compare against
+  skipped     signup_started -> signup_completed: baseline is already 99.6% — only 0.4pp of headroom
+              exists, so no change can move it by enough to measure
+  baseline    4.78% over 102d  ->  post 4.85% over 6d  (+0.07pp, 1% relative)
+  resolution  can resolve +/-2.14pp at n=15347 pre / 824 post
+  adjusted    +0.35pp after removing trend and day-of-week  (95% CI -2.24pp to +2.95pp)
+  method      interrupted time series (no control series - forecast only)
+  excluded    25 operator people (4776 events) via $host [localhost%, %.vercel.app] and the explicit flag
+  why         only 6 days since the change; the model needs at least 14 post-period days before a
+              verdict means anything.
+```
+
+**This matches the Phase 0 prediction.** Predicted: skip the closest metric for want of a
+pre-period, grade on visitors -> `signup_started`, roughly ±2.5pp against a ~5.3% baseline,
+verdict `cannot tell yet`. Actual: ±2.14pp against 4.78%, `cannot tell yet`. The baseline is
+slightly lower and the interval slightly tighter than predicted because operator exclusion
+removed 25 people and 4,776 events, and the window is a year rather than 90 days.
+
+The change is genuinely ungradeable today. Re-run after 2026-09-15 for the 14-day minimum;
+roughly 30 post-period days gets the resolution to about ±1.2pp.

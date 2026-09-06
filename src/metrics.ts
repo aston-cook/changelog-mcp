@@ -16,6 +16,11 @@ export interface Metric {
  */
 export const LADDERS: Record<Category, Metric[]> = {
   onboarding: [
+    {
+      name: 'onboarding step-through',
+      numerator: 'onboarding_screen_advanced',
+      denominator: 'onboarding_screen_viewed',
+    },
     { name: 'signup completion', numerator: 'signup_completed', denominator: 'signup_started' },
     { name: 'visitor to signup', numerator: 'signup_started', denominator: '$pageview' },
     { name: 'signup to trial', numerator: 'trial_created', denominator: 'signup_completed' },
@@ -52,6 +57,16 @@ export const LADDERS: Record<Category, Metric[]> = {
     { name: 'signup to trial', numerator: 'trial_created', denominator: 'signup_completed' },
   ],
 };
+
+/**
+ * A metric already converting above this has no room left to move. Grading an onboarding
+ * change on a step where 99% of people already succeed measures the 1% that don't, and the
+ * minimum detectable effect can exceed the headroom that physically exists.
+ */
+export const SATURATION_MAX = 0.9;
+
+/** Below this, the rate is so rare that a window of any realistic length is pure noise. */
+export const NEAR_ZERO_MIN = 0.002;
 
 export type Volumes = Record<string, { pre: number; post: number }>;
 
@@ -106,6 +121,26 @@ export function resolveMetric(candidates: Metric[], volumes: Volumes): Resolutio
       skipped.push({ metric: m, reason: `${m.denominator} has no post-period volume` });
       continue;
     }
+
+    const baseline = n.pre / d.pre;
+    if (baseline > SATURATION_MAX) {
+      skipped.push({
+        metric: m,
+        reason:
+          `baseline is already ${(baseline * 100).toFixed(1)}% — only ` +
+          `${((1 - baseline) * 100).toFixed(1)}pp of headroom exists, so no change can move ` +
+          `it by enough to measure`,
+      });
+      continue;
+    }
+    if (baseline < NEAR_ZERO_MIN) {
+      skipped.push({
+        metric: m,
+        reason: `baseline is ${(baseline * 100).toFixed(3)}% — too rare to resolve at any realistic window length`,
+      });
+      continue;
+    }
+
     return { chosen: m, skipped };
   }
 

@@ -348,7 +348,13 @@ function renderOne(g: Graded, impact: OperatorImpact, cfg: Config): string {
 
   const m = g.metric!;
   const d = g.decision!;
-  const closer = g.skippedCloser.length ? ' (closest available)' : ' (closest to the change)';
+  const hinted =
+    c.metricHint && (m.numerator === c.metricHint || m.denominator === c.metricHint);
+  const closer = hinted
+    ? ` (from your metric_hint "${c.metricHint}")`
+    : g.skippedCloser.length
+      ? ' (closest available)'
+      : ' (closest to the change)';
 
   lines.push(`  metric      ${m.denominator} -> ${m.numerator}${closer}`);
 
