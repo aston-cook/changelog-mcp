@@ -123,8 +123,32 @@ describe('check_changes', () => {
     });
     const out = await handleCheckChanges(c, cfg, {}, NOW);
 
-    expect(out).toContain('[cannot tell yet]');
-    expect(out).toMatch(/at least 14/);
+    expect(out).toContain('Still gathering data');
+    expect(out).toContain('gradeable 2026-09-15');
+    expect(out).toContain('Next check worth running: 2026-09-15');
+  });
+
+  it('spends NO queries on a change too recent to grade', async () => {
+    const c = makeClient({
+      annotations: [ann(1, '2026-09-04T00:00:00Z', 'Shipped yesterday', 'onboarding')],
+      volumes: FULL_VOLUMES,
+      changeDate: '2026-09-04',
+    });
+    await handleCheckChanges(c, cfg, {}, NOW);
+    expect(c.query).not.toHaveBeenCalled();
+  });
+
+  it('reuses an identical query instead of refetching it', async () => {
+    const c = makeClient({
+      annotations: [
+        ann(1, '2026-03-01T00:00:00Z', 'Copy one', 'copy'),
+        ann(2, '2026-06-01T00:00:00Z', 'Copy two', 'copy'),
+      ],
+      volumes: FULL_VOLUMES,
+    });
+    await handleCheckChanges(c, cfg, {}, NOW);
+    const sql = c.query.mock.calls.map((call) => String(call[0]));
+    expect(new Set(sql).size).toBe(sql.length); // no duplicate SQL reached the client
   });
 
   it('skips a metric the change itself created and says why (F5)', async () => {
@@ -315,7 +339,8 @@ describe('check_changes — log size and boundaries', () => {
 
     expect(out).toContain('change number 30');
     expect(out).not.toMatch(/change number 1/);
-    expect(out).toMatch(/5 older change\(s\) not graded/);
+    expect(out).toMatch(/30 changes logged/);
+    expect(out).toMatch(/5 older change\(s\) beyond the 25-per-run cap/);
   });
 
   it('pages through an annotation log longer than one page', async () => {

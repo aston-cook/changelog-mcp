@@ -58,6 +58,17 @@ describe('log_change', () => {
     expect(out).not.toMatch(/phx_/);
   });
 
+  it('says when the change becomes gradeable, so nobody checks too early', async () => {
+    const c = client();
+    const out = await handleLogChange(c, {
+      summary: 'Cut Pro to $19',
+      category: 'pricing',
+      surface: '/pricing',
+      date: '2026-09-01T00:00:00Z',
+    });
+    expect(out).toContain('Gradeable from 2026-09-15');
+  });
+
   it('nudges toward metric_hint when it was omitted', async () => {
     const c = client();
     const out = await handleLogChange(c, { summary: 'some copy', category: 'copy', surface: '/x' });

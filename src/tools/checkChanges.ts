@@ -30,7 +30,13 @@ import {
 import { operatorImpact, type OperatorImpact } from '../operator.js';
 import { fitIts, SingularMatrixError, type ItsResult } from '../stats/its.js';
 import { relative } from '../stats/mde.js';
-import { decide, MIN_POST_DAYS, MIN_PRE_POST_RATIO, type Decision } from '../verdict.js';
+import {
+  decide,
+  gradeableOn,
+  MIN_POST_DAYS,
+  MIN_PRE_POST_RATIO,
+  type Decision,
+} from '../verdict.js';
 import { counters, flush } from '../telemetry.js';
 
 const DAY_MS = 86_400_000;
@@ -43,14 +49,17 @@ const DAY_MS = 86_400_000;
 const PRE_LOOKBACK_DAYS = 365;
 const MAX_POST_DAYS = 90;
 const MAX_CHANGES = 25;
-const DEFAULT_SINCE_DAYS = 180;
 
 export const checkChangesShape = {
   since: z
     .string()
     .datetime({ offset: true })
     .optional()
-    .describe(`Only grade changes logged on or after this instant. Defaults to ${DEFAULT_SINCE_DAYS} days ago.`),
+    .describe(
+      'Optional. Only grade changes logged on or after this instant. ' +
+        'By default the whole log is graded, newest first — you do not need to pass this to ' +
+        'reach older changes.',
+    ),
   category: z
     .enum(CATEGORIES)
     .optional()
@@ -63,6 +72,7 @@ export interface CheckChangesArgs {
 }
 
 const dayString = (d: Date): string => d.toISOString().slice(0, 10);
+
 const addDays = (iso: string, n: number): Date => new Date(Date.parse(iso) + n * DAY_MS);
 const daysBetween = (a: string | Date, b: string | Date): number =>
   Math.round(
@@ -87,18 +97,37 @@ interface Graded {
   trimmedForRatio: boolean;
   boundedEvents: string[];
   mixed: { from: string; to: string } | null;
+  waitingUntil: string | null;
   unresolvable: string | null;
 }
 
+/** Per-run memoization keyed on the SQL itself. Identical queries cost one round trip. */
+function memoize(client: QueryRunner): QueryRunner & { calls: () => number } {
+  const cache = new Map<string, Promise<{ results: unknown[][] }>>();
+  let calls = 0;
+  return {
+    query(sql: string) {
+      const hit = cache.get(sql);
+      if (hit) return hit;
+      calls += 1;
+      const p = client.query(sql);
+      cache.set(sql, p);
+      return p;
+    },
+    calls: () => calls,
+  };
+}
+
 export async function handleCheckChanges(
-  client: Pick<PostHogClient, 'listAnnotations'> & QueryRunner,
+  rawClient: Pick<PostHogClient, 'listAnnotations'> & QueryRunner,
   cfg: Config,
   args: CheckChangesArgs,
   now: Date = new Date(),
 ): Promise<string> {
-  const sinceMs = args.since
-    ? Date.parse(args.since)
-    : now.getTime() - DEFAULT_SINCE_DAYS * DAY_MS;
+  const client = Object.assign(memoize(rawClient), {
+    listAnnotations: rawClient.listAnnotations.bind(rawClient),
+  });
+  const sinceMs = args.since ? Date.parse(args.since) : Number.NEGATIVE_INFINITY;
 
   // ---- read the log -------------------------------------------------------------------
   const annotations = await fetchAllAnnotations(client);
@@ -118,6 +147,7 @@ export async function handleCheckChanges(
   }
 
   changes.sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+  const totalLogged = changes.length;
   const truncatedCount = Math.max(0, changes.length - MAX_CHANGES);
   changes = changes.slice(-MAX_CHANGES); // keep the most recent, still in ascending order
 
@@ -125,12 +155,23 @@ export async function handleCheckChanges(
     return renderEmpty(malformed, args);
   }
 
+  // ---- pre-flight: nothing can grade a change younger than the post-period minimum ------
+  // Skipping these before pass 1 saves two PostHog round trips each, which is most of the
+  // cost of a routine check where nothing has aged in yet.
+  const waiting = new Map<number, string>();
+  for (const c of changes) {
+    if (daysBetween(c.date, now) < MIN_POST_DAYS) {
+      waiting.set(c.annotationId!, gradeableOn(c.date));
+    }
+  }
+  const active = changes.filter((c) => !waiting.has(c.annotationId!));
+
   // ---- pass 1: resolve each change to its closest usable metric ------------------------
   const resolved = new Map<number, Metric | null>();
   const skippedByChange = new Map<number, { metric: Metric; reason: string }[]>();
   const volumesByChange = new Map<number, Awaited<ReturnType<typeof fetchVolumes>>>();
 
-  for (const c of changes) {
+  for (const c of active) {
     const ladder = applyHint(LADDERS[c.category], c.metricHint);
     const preStart = dayString(addDays(c.date, -PRE_LOOKBACK_DAYS));
     const windowEnd = dayString(addDays(dayString(now), 1));
@@ -153,7 +194,7 @@ export async function handleCheckChanges(
   const metricNames = new Map<number, string>();
   for (const [id, m] of resolved) if (m) metricNames.set(id, m.name);
   const overlaps = findOverlaps(
-    changes.map((c) => ({ annotationId: c.annotationId!, date: c.date })),
+    active.map((c) => ({ annotationId: c.annotationId!, date: c.date })),
     metricNames,
     MIN_POST_DAYS,
   );
@@ -163,6 +204,14 @@ export async function handleCheckChanges(
 
   for (const c of changes) {
     const id = c.annotationId!;
+
+    const until = waiting.get(id);
+    if (until) {
+      graded.push({ ...blank(c, [], ''), waitingUntil: until });
+      counters.verdict('cannot tell yet');
+      continue;
+    }
+
     const metric = resolved.get(id) ?? null;
     const skipped = skippedByChange.get(id) ?? [];
 
@@ -172,7 +221,7 @@ export async function handleCheckChanges(
     }
 
     // A later change on the same metric truncates this one's post period.
-    const laterSameMetric = changes.find(
+    const laterSameMetric = active.find(
       (o) =>
         o.annotationId !== id &&
         Date.parse(o.date) > Date.parse(c.date) &&
@@ -249,6 +298,7 @@ export async function handleCheckChanges(
       its,
       truncatedBy: laterSameMetric ? laterSameMetric.annotationId! : null,
       trimmedForRatio,
+      waitingUntil: null,
       boundedEvents: boundariesFor(metric, cfg.eventValidFrom),
       mixed: mixedSource(metric, volumesByChange.get(id) ?? {}),
       unresolvable: null,
@@ -256,7 +306,11 @@ export async function handleCheckChanges(
   }
 
   // ---- operator exclusion transparency -------------------------------------------------
-  const earliest = changes[0]!;
+  if (active.length === 0) {
+    return render(graded, { people: 0, events: 0 }, malformed, truncatedCount, cfg, totalLogged);
+  }
+
+  const earliest = active[0]!;
   const impact = await operatorImpact(
     client,
     cfg,
@@ -264,7 +318,7 @@ export async function handleCheckChanges(
     dayString(addDays(dayString(now), 1)),
   );
 
-  return render(graded, impact, malformed, truncatedCount, cfg);
+  return render(graded, impact, malformed, truncatedCount, cfg, totalLogged);
 }
 
 function blank(
@@ -288,6 +342,7 @@ function blank(
     trimmedForRatio: false,
     boundedEvents: [],
     mixed: null,
+    waitingUntil: null,
     unresolvable: reason,
   };
 }
@@ -332,26 +387,64 @@ function render(
   malformed: MalformedRecord[],
   truncatedCount: number,
   cfg: Config,
+  totalLogged: number,
 ): string {
-  const blocks = graded.map((g) => renderOne(g, impact, cfg));
+  const waiting = graded.filter((g) => g.waitingUntil);
+  const done = graded.filter((g) => !g.waitingUntil);
 
-  const tally = graded.reduce<Record<string, number>>((acc, g) => {
+  const tally = done.reduce<Record<string, number>>((acc, g) => {
     const v = g.decision?.verdict ?? 'cannot tell yet';
     acc[v] = (acc[v] ?? 0) + 1;
     return acc;
   }, {});
 
-  const summary = ['moved', 'did not move', 'cannot tell yet']
+  const parts = ['moved', 'did not move', 'cannot tell yet']
     .filter((v) => tally[v])
-    .map((v) => `${tally[v]} ${v}`)
-    .join(', ');
+    .map((v) => `${tally[v]} ${v}`);
 
-  let out = `${graded.length} logged change(s): ${summary}\n\n${blocks.join('\n\n')}`;
-  if (truncatedCount > 0) {
-    out += `\n\n${truncatedCount} older change(s) not graded in this run. Narrow with "since" or "category".`;
+  const headline =
+    `${totalLogged} change${totalLogged === 1 ? '' : 's'} logged. ` +
+    (done.length ? `${done.length} graded (${parts.join(', ')}).` : 'None gradeable yet.') +
+    (waiting.length ? ` ${waiting.length} still gathering data.` : '');
+
+  const sections: string[] = [headline];
+
+  if (done.length) {
+    // Most actionable first: a real result outranks a refusal.
+    const rank = (g: Graded) =>
+      g.decision?.verdict === 'moved' ? 0 : g.decision?.verdict === 'did not move' ? 1 : 2;
+    const ordered = [...done].sort((a, b) => rank(a) - rank(b));
+    sections.push(ordered.map((g) => renderOne(g, impact, cfg)).join('\n\n'));
   }
-  if (malformed.length) out += `\n\n${renderMalformed(malformed)}`;
-  return out;
+
+  if (waiting.length) {
+    const rows = waiting
+      .map(
+        (g) =>
+          `  ${g.change.date.slice(0, 10)}  ${g.change.summary.slice(0, 52).padEnd(54)}` +
+          `gradeable ${g.waitingUntil}`,
+      )
+      .join('\n');
+    sections.push(`Still gathering data (no queries spent on these):
+${rows}`);
+
+    const next = waiting
+      .map((g) => g.waitingUntil!)
+      .sort()
+      .at(0);
+    sections.push(`Next check worth running: ${next}`);
+  }
+
+  if (truncatedCount > 0) {
+    sections.push(
+      `${truncatedCount} older change(s) beyond the ${MAX_CHANGES}-per-run cap. ` +
+        `Narrow with "category", or pass "since" to move the window back.`,
+    );
+  }
+
+  if (malformed.length) sections.push(renderMalformed(malformed));
+
+  return sections.join('\n\n');
 }
 
 function renderOne(g: Graded, impact: OperatorImpact, cfg: Config): string {
