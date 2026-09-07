@@ -1,0 +1,41 @@
+{
+  "name": "changelog-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that logs user-visible product changes to PostHog and grades them later. Built for solo operators who cannot A/B test.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "changelog-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "skills",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "posthog",
+    "analytics",
+    "changelog",
+    "annotations"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
