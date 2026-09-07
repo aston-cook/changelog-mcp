@@ -56,6 +56,24 @@ https://us.posthog.com/project/12345
 }
 ```
 
+**On Windows**, `npx` is a `.cmd` shim that MCP clients cannot spawn directly (Node blocks it
+under the CVE-2024-27980 mitigation, so you get `ENOENT` or `EINVAL`). Use `cmd /c` instead:
+
+```json
+{
+  "mcpServers": {
+    "changelog": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "changelog-mcp"],
+      "env": {
+        "POSTHOG_PERSONAL_API_KEY": "${POSTHOG_PERSONAL_API_KEY}",
+        "POSTHOG_PROJECT_ID": "12345"
+      }
+    }
+  }
+}
+```
+
 Put the key itself in `.claude/settings.local.json`, which is gitignored:
 
 ```json
@@ -86,12 +104,16 @@ Put the key itself in `.claude/settings.local.json`, which is gitignored:
 }
 ```
 
+
+Windows needs the same `cmd /c` treatment shown above.
+
 </details>
 
 <details>
 <summary><b>Cursor, Windsurf, other MCP clients</b></summary>
 
 Same shape: command `npx`, args `["-y", "changelog-mcp"]`, and the two environment variables.
+On Windows, use command `cmd` with args `["/c", "npx", "-y", "changelog-mcp"]`.
 
 </details>
 
