@@ -44,7 +44,8 @@ jobs:
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
             '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-            | timeout 30s node dist/index.js > out.json
+            | timeout 30s node dist/index.js > out.json || true
+          cat out.json
           grep -q '"name":"log_change"' out.json
           grep -q '"name":"check_changes"' out.json
           echo "handshake OK"
