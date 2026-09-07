@@ -11,7 +11,8 @@
   "files": [
     "dist",
     "skills",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
@@ -37,5 +38,14 @@
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aston-cook/changelog-mcp.git"
+  },
+  "homepage": "https://github.com/aston-cook/changelog-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/aston-cook/changelog-mcp/issues"
+  },
+  "author": "Aston Cook (https://github.com/aston-cook)"
 }
