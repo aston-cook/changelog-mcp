@@ -1,68 +1,45 @@
 # changelog
 
-An MCP server that logs user-visible product changes to PostHog, then grades them later.
+[![CI](https://github.com/aston-cook/changelog-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/aston-cook/changelog-mcp/actions/workflows/ci.yml)
 
-Built for solo operators who ship pricing, copy, onboarding and packaging changes and never
-find out whether they worked — because nobody remembers to log what changed, and almost
-nobody has enough traffic to A/B test it.
+**Log what you shipped. Find out later whether it worked.**
 
-The agent already knows what changed and when, because it made the change. So logging becomes
-a side effect of work already happening, and a second tool asks "did it work" later.
+An MCP server for solo builders who ship pricing, copy, and onboarding changes and never find
+out if they helped — because nobody remembers to write down what changed, and almost nobody
+has the traffic to A/B test it.
 
-Two tools. No database, no hosted service, no UI, no runtime LLM call. It holds no
-credentials beyond your own PostHog key.
+Your AI assistant already knows what changed and when, because it made the change. So logging
+happens on its own, and a second tool grades it weeks later.
 
----
-
-## What makes it different
-
-**It refuses to answer when it cannot.** Every verdict is preceded by a minimum-detectable-
-effect calculation from your real baseline and your real traffic. If the change cannot be
-resolved at your volume, the answer is `cannot tell yet` plus what it would take — never a
-number dressed up as a finding.
-
-**`did not move` is never returned for an underpowered null.** The tool says a change did not
-move only when the window had the statistical power to see a change worth acting on and
-didn't. Otherwise it says `cannot tell yet`. This is the single most important rule in it.
-
-**It grades on the metric closest to the change that can actually move.** It walks a
-closest-first ladder and skips rungs that cannot answer — events the change itself created,
-and funnel steps already converting at 99% where no headroom exists. Reaching straight for
-the revenue metric costs roughly six times the resolution on a small account.
-
-**It removes trend and weekly seasonality before attributing anything.** A metric that was
-already climbing does not get to make your change look good.
-
-**It excludes your own traffic.** See below — this is the part most analytics gets wrong.
+Two tools. No database, no hosted service, no account to create. Your PostHog key is the only
+credential, and it stays on your machine.
 
 ---
 
-## Setup
+## Quickstart
 
-### 1. Create a PostHog personal API key
+**1. Get a PostHog personal API key**
 
-At **Settings → Personal API keys** (`https://us.posthog.com/settings/user-api-keys`), create
-a key with these scopes:
+Go to [Settings -> Personal API keys](https://us.posthog.com/settings/user-api-keys) and create
+one with these three scopes:
 
-| scope | needed by |
-|---|---|
-| `annotation:read` | both tools |
-| `annotation:write` | `log_change` |
-| `query:read` | `check_changes` |
+`annotation:read` · `annotation:write` · `query:read`
 
-Personal API keys start with `phx_`. Project keys (`phc_`) and project secret keys (`phs_`)
-will not work.
+It starts with `phx_`. A `phc_` project key is a different thing and will not work.
 
-### 2. Find your project id
+**2. Find your project id**
 
-It is the number in your project URL: `https://us.posthog.com/project/435332` → `435332`.
+It is the number in your PostHog URL:
 
-Without it, the PostHog API falls back to "the last project you visited in the UI", which is
-not deterministic. The server refuses to start rather than guess.
+```
+https://us.posthog.com/project/435332
+                               ^^^^^^
+```
 
-### 3. Add it to your MCP client
+**3. Add it to your AI tool**
 
-**Claude Code** — `.mcp.json` in your project, or `claude mcp add`:
+<details open>
+<summary><b>Claude Code</b> — create <code>.mcp.json</code> in your project root</summary>
 
 ```json
 {
@@ -71,7 +48,7 @@ not deterministic. The server refuses to start rather than guess.
       "command": "npx",
       "args": ["-y", "changelog-mcp"],
       "env": {
-        "POSTHOG_PERSONAL_API_KEY": "phx_...",
+        "POSTHOG_PERSONAL_API_KEY": "${POSTHOG_PERSONAL_API_KEY}",
         "POSTHOG_PROJECT_ID": "435332"
       }
     }
@@ -79,101 +56,149 @@ not deterministic. The server refuses to start rather than guess.
 }
 ```
 
-**Claude Desktop** — the same block in `claude_desktop_config.json`.
+Put the key itself in `.claude/settings.local.json`, which is gitignored:
 
-### 4. Install the skill
+```json
+{
+  "env": {
+    "POSTHOG_PERSONAL_API_KEY": "phx_your_key_here"
+  }
+}
+```
 
-Copy `skills/changelog/` into your `.claude/skills/` directory. It tells the agent when to
-call `log_change` — and, more importantly, when not to.
+</details>
 
-### Environment
+<details>
+<summary><b>Claude Desktop</b> — edit <code>claude_desktop_config.json</code></summary>
 
-| variable | default | purpose |
-|---|---|---|
-| `POSTHOG_PERSONAL_API_KEY` | *required* | `phx_` personal API key |
-| `POSTHOG_PROJECT_ID` | *required* | numeric project id |
-| `POSTHOG_HOST` | `https://us.posthog.com` | use `https://eu.posthog.com` for EU cloud |
-| `CHANGELOG_OPERATOR_HOSTS` | `localhost%,%.vercel.app` | comma-separated SQL LIKE patterns; set to empty to disable |
-| `CHANGELOG_EVENT_VALID_FROM` | unset | `event:YYYY-MM-DD` pairs marking where each event's data becomes trustworthy |
-| `CHANGELOG_TELEMETRY` | unset (off) | `1` to opt in |
-| `CHANGELOG_TELEMETRY_URL` | unset | where counts go; without it telemetry is a no-op |
+```json
+{
+  "mcpServers": {
+    "changelog": {
+      "command": "npx",
+      "args": ["-y", "changelog-mcp"],
+      "env": {
+        "POSTHOG_PERSONAL_API_KEY": "phx_your_key_here",
+        "POSTHOG_PROJECT_ID": "435332"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Cursor, Windsurf, other MCP clients</b></summary>
+
+Same shape: command `npx`, args `["-y", "changelog-mcp"]`, and the two environment variables.
+
+</details>
+
+**4. Install the skill (Claude Code, optional but recommended)**
+
+Copy `skills/changelog/` into your project's `.claude/skills/`. It teaches the assistant when
+to log on its own — and, just as importantly, when not to.
+
+**5. Restart, then check it connected**
+
+Run `/mcp` in Claude Code. You should see `changelog` with two tools.
+
+### Did it work?
+
+Ask your assistant to run `check_changes`. The error messages say exactly what is wrong:
+
+| What you see | What to fix |
+|---|---|
+| `No logged changes found` | Working. Nothing logged yet. |
+| `POSTHOG_PERSONAL_API_KEY is not set` | The key is not reaching the server. Check the file you put it in. |
+| `PostHog rejected the API key (401)` | Key is wrong or revoked. |
+| `403 ... missing a scope` | Key works; you missed one of the three scopes. |
+| `404 ... check POSTHOG_PROJECT_ID` | Wrong project number. |
 
 ---
 
-## Tools
+## Everyday use
 
-### `log_change`
+You do not call these tools by hand. You mention what you did, and it logs:
 
-Records one user-visible change as a PostHog annotation.
+> **You:** shipped the new pricing page, Pro is $19 now
+>
+> **Assistant:** Logged change 431. Gradeable from 2026-09-21.
 
-| field | required | notes |
-|---|---|---|
-| `summary` | yes | one line, human readable |
-| `category` | yes | `pricing` `copy` `onboarding` `packaging` `email` `channel` `other` |
-| `surface` | yes | where it went live: `/free`, `store checkout`, `LinkedIn` |
-| `metric_hint` | no | the funnel step it touches, e.g. `signup_started` |
-| `date` | no | ISO-8601, defaults to now |
+It catches things that never touch your repo, which is most of what actually moves the numbers:
 
-The annotation content is two lines — a human summary PostHog shows on charts, and a JSON
-record the check tool reads back:
+> **You:** started posting to LinkedIn 3x a week
+>
+> **Assistant:** Logged change 432 under `channel`.
 
-```
-[chg:1] Asked onboarding questions before requiring an account
-{"v":1,"category":"onboarding","surface":"/free","metric_hint":"signup_started"}
-```
+Then, weeks later:
 
-### `check_changes`
-
-Returns exactly one of three verdicts per change.
-
-| verdict | means |
-|---|---|
-| `moved` | the effect clears what your volume can resolve, and the interval excludes zero |
-| `did not move` | the window could have seen a meaningful change and did not |
-| `cannot tell yet` | not enough data, or two changes overlap on the same metric |
+> **You:** did the pricing change work?
 
 ```
-[cannot tell yet] Asked onboarding questions first and saved progress before requiring an account
-  onboarding | /free | 2026-09-01 | annotation 431434
-  metric      $pageview -> signup_started (closest available)
-  skipped     onboarding_screen_viewed -> onboarding_screen_advanced: no pre-period volume — the
-              change appears to have created these events, so there is nothing to compare against
-  skipped     signup_started -> signup_completed: baseline is already 99.6% — only 0.4pp of
-              headroom exists, so no change can move it by enough to measure
-  baseline    4.78% over 102d  ->  post 4.85% over 6d  (+0.07pp, 1% relative)
-  resolution  can resolve +/-2.14pp at n=15347 pre / 824 post
-  adjusted    +0.35pp after removing trend and day-of-week  (95% CI -2.24pp to +2.95pp)
+6 changes logged. 4 graded (1 moved, 1 did not move, 2 cannot tell yet). 2 still gathering data.
+
+[moved] Cut Pro from $29 to $19
+  pricing | /pricing | 2026-07-14 | annotation 431
+  metric      paywall_viewed -> checkout_started (closest to the change)
+  baseline    12.40% over 90d  ->  post 15.10% over 30d  (+2.70pp, 22% relative)
+  resolution  can resolve +/-1.90pp at n=2140 pre / 1180 post
+  adjusted    +2.31pp after removing trend and day-of-week  (95% CI +0.44pp to +4.18pp)
   method      interrupted time series (no control series - forecast only)
-  excluded    25 operator people (4776 events) via $host [localhost%, %.vercel.app]
-  why         only 6 days since the change; the model needs at least 14 post-period days
-              before a verdict means anything.
+  excluded    9 operator people (312 events) via $host [localhost%, %.vercel.app]
+  why         2.31pp up (18.6% relative) after removing trend and day-of-week, which clears
+              the 1.90pp this volume can resolve.
+
+Still gathering data (no queries spent on these):
+  2026-09-01  Asked onboarding questions first                gradeable 2026-09-15
+  2026-09-05  Reworded the pricing FAQ                        gradeable 2026-09-19
+
+Next check worth running: 2026-09-15
 ```
 
-That is real output against a real project. Both skip lines matter: the first is a change
-that created the very events that would measure it, the second is a funnel step already
-converting at 99.6% where no change has room to move. Neither is something a dashboard
-would have told you.
+---
+
+## What makes it different
+
+**It refuses to answer when it cannot.** Every verdict is preceded by a minimum-detectable-
+effect calculation from your real baseline and your real traffic. If a change cannot be
+resolved at your volume you get `cannot tell yet` and what it would take, never a number
+dressed up as a finding.
+
+**`did not move` is never an underpowered null.** It says a change did not move only when the
+window had the statistical power to see one and did not. Otherwise it says `cannot tell yet`.
+This is the most important rule in the tool.
+
+**It grades on the metric closest to the change that can actually move.** It walks a
+closest-first ladder and skips rungs that cannot answer: events the change itself created, and
+funnel steps already converting at 99% where no headroom exists. Reaching straight for revenue
+costs roughly six times the resolution on a small account.
+
+**It removes trend and weekly seasonality first.** A metric that was already climbing does not
+get to make your change look good.
+
+**It excludes your own traffic.** See below. This is the part most analytics gets wrong.
 
 ---
 
 ## Operator traffic
 
-**This is the part that matters most, and the part that is easy to get backwards.**
+**This is the part that is easy to get backwards.**
 
-The tool excludes your own traffic at the **person** level: any person who has ever emitted
-an event from a host matching `CHANGELOG_OPERATOR_HOSTS`, or who carries the explicit flag,
-is removed from both legs of every metric.
+The tool removes your own traffic at the **person** level: anyone who has ever emitted an event
+from a host matching `CHANGELOG_OPERATOR_HOSTS`, or who carries an explicit flag, is dropped
+from both legs of every metric.
 
 ### Why not PostHog's bot detection?
 
-Because it would delete your revenue. Server-side events sent with `posthog-node` carry no
-user agent, and PostHog classifies no-user-agent traffic as `$virt_traffic_type = 'Automation'`,
-`$virt_is_bot = true`. On a typical Next.js + Stripe setup that is every trial, every
-purchase, and every payment failure.
+Because it would delete your revenue. Server-side events sent with `posthog-node` carry no user
+agent, and PostHog classifies no-user-agent traffic as `$virt_is_bot = true`. On a typical
+Next.js and Stripe setup that is every trial, every purchase, and every payment failure.
 
 A filter of `$virt_is_bot = false` returns **zero trials, forever**. This server never uses
-`$virt_is_bot`, `$virt_traffic_type`, `$virt_traffic_category`, or `$browser_type` as a
-filter, and a test asserts they appear in no generated query.
+`$virt_is_bot`, `$virt_traffic_type`, `$virt_traffic_category`, or `$browser_type` as a filter,
+and a test asserts they appear in no generated query.
 
 ### Why `$host` instead?
 
@@ -184,15 +209,14 @@ bot detector flags. Measured on the project this was built against, over 90 days
 |---|---|---|---|
 | clean | 130 | 58 | **44.6%** |
 | people who also emit localhost traffic | 47 | **0** | **0%** |
-| blended — what the analytics showed | 177 | 58 | **32.8%** |
+| blended, what the dashboard showed | 177 | 58 | **32.8%** |
 
-That 32.8% is the number a pricing decision got made on. The clean number was 44.6%.
+That 32.8% is the number a pricing decision got made on. The real one was 44.6%.
 
 ### Closing the gap
 
-`$host` person-tainting catches any browser that has touched `localhost` or a preview URL. It
-misses a fresh incognito session or a CI runner hitting production directly. To close that,
-set an explicit flag in your app:
+`$host` catches any browser that has touched `localhost` or a preview URL. It misses a fresh
+incognito session or a CI runner hitting production. To close that, flag yourself in your app:
 
 ```ts
 posthog.init(KEY, { api_host: HOST });
@@ -203,51 +227,69 @@ if (process.env.NEXT_PUBLIC_OPERATOR === '1') {
 }
 ```
 
-Then run your own sessions and automation with `NEXT_PUBLIC_OPERATOR=1`. The server picks up
-both `$operator` on events and `is_operator` on persons with no extra configuration.
+Then run your own sessions with `NEXT_PUBLIC_OPERATOR=1`. The server picks up both with no
+extra configuration.
 
 ---
 
 ## Data boundaries
 
-Analytics accumulate hard boundaries: an identity key that changed, a webhook subscribed
-late, a table migration. Reading a baseline across one produces a confident number built
-from data that does not mean what the column name says it means — the exact failure this
-tool exists to prevent, arriving through the back door.
+Analytics accumulate hard boundaries: an identity key that changed, a webhook subscribed late,
+a table migration. Reading a baseline across one gives a confident number built from data that
+does not mean what the column says, which is the exact failure this tool exists to prevent
+arriving through the back door.
 
-The tool ships with no knowledge of your history. Declare your boundaries:
+The tool ships knowing nothing about your history. Declare your boundaries:
 
 ```
 CHANGELOG_EVENT_VALID_FROM=store_purchase_completed:2026-07-05,store_checkout_started:2026-07-05
 ```
 
-Rows for those events before that date are excluded from every query — the series, the
-volumes check, and the usability decision. If that leaves too little clean history, the
-guard rails refuse a verdict rather than grade on the remainder, and the output names the
-boundary that clipped the window:
+Rows before that date are excluded from every query, and the output names the boundary:
 
 ```
   bounded     history clipped to declared data boundaries: store_purchase_completed from 2026-07-05
 ```
 
-A real example from the project this was built against: store purchases were keyed by email
-rather than by person id until 2026-07-05. Counting distinct persons across that line
-silently undercounts every purchase before it.
+Real example: store purchases were keyed by email rather than person id until 2026-07-05.
+Counting distinct persons across that line silently undercounts every earlier purchase.
 
-## Capture sources
+---
 
-`check_changes` samples `$lib` per event and warns when a metric's two legs were captured by
-different SDKs:
+## Configuration
+
+| variable | default | purpose |
+|---|---|---|
+| `POSTHOG_PERSONAL_API_KEY` | *required* | `phx_` personal API key |
+| `POSTHOG_PROJECT_ID` | *required* | numeric project id |
+| `POSTHOG_HOST` | `https://us.posthog.com` | use `https://eu.posthog.com` for EU cloud |
+| `CHANGELOG_OPERATOR_HOSTS` | `localhost%,%.vercel.app` | SQL LIKE patterns; empty string disables |
+| `CHANGELOG_EVENT_VALID_FROM` | unset | `event:YYYY-MM-DD` pairs marking trustworthy history |
+| `CHANGELOG_TELEMETRY` | off | `1` to opt in |
+| `CHANGELOG_TELEMETRY_URL` | unset | where counts go; without it telemetry is a no-op |
+
+### `log_change`
+
+| field | required | notes |
+|---|---|---|
+| `summary` | yes | one line, human readable |
+| `category` | yes | `pricing` `copy` `onboarding` `packaging` `email` `channel` `other` |
+| `surface` | yes | `/free`, `store checkout`, `LinkedIn` |
+| `metric_hint` | no | the funnel step it touches, e.g. `signup_started` |
+| `date` | no | ISO-8601, defaults to now |
+
+Stored as a PostHog annotation: a human line PostHog shows on charts, and a machine line the
+check tool reads back.
 
 ```
-  mixed       legs captured by different SDKs (web -> posthog-node); the ratio is
-              comparable over time but the absolute rate is not a true rate
+[chg:1] Asked onboarding questions before requiring an account
+{"v":1,"category":"onboarding","surface":"/free","metric_hint":"signup_started"}
 ```
 
-Ad blockers suppress client-side events and not server-side ones, so a client denominator
-with a server numerator inflates the rate. For a before/after comparison this largely
-cancels while the ad-block rate holds steady, which is why it is reported rather than
-refused — but do not read the absolute baseline as the true rate.
+### `check_changes`
+
+Grades the whole log by default, newest first. `since` and `category` narrow it; neither is
+needed to reach older changes. Changes too recent to grade cost no queries at all.
 
 ---
 
@@ -259,36 +301,33 @@ The verdict engine is an **interrupted time series**, not CausalImpact.
 rate_t = b0 + b1*t + sum(b_dow * D_t) + b_step * 1[t >= change]
 ```
 
-Fit by weighted least squares, weighted by each day's denominator. Nine parameters:
-intercept, linear trend, six day-of-week dummies, and the step.
+Weighted least squares, weighted by each day's denominator. Nine parameters: intercept, linear
+trend, six day-of-week dummies, and the step.
 
 **Why not CausalImpact?** Its documentation requires "a set control time series that were
 themselves not affected by the intervention." A solo operator changing their only funnel has
 none, so the method would degenerate to a forecast from the series' own history anyway. This
 model does that explicitly, with assumptions you can read.
 
-The widely repeated "CausalImpact needs a 3:1 pre/post ratio and 30–50 pre-period
-observations" figures do **not** appear in Google's CausalImpact documentation, in the CRAN
-vignette, or in tfcausalimpact. They trace to third-party marketing content. Guard rails of
-that shape are used here because they are sensible for this model — day-of-week seasonality
-costs six parameters and cannot be identified from less than four full weeks — not because
-any package documentation requires them.
+The widely repeated "CausalImpact needs a 3:1 pre/post ratio and 30 to 50 pre-period
+observations" figures do **not** appear in Google's CausalImpact documentation, the CRAN
+vignette, or tfcausalimpact. They trace to third-party marketing content. Guard rails of that
+shape are used here because they suit this model, not because any package requires them.
 
-Guard rails, below which no verdict is produced:
+No verdict is produced below:
 
-- at least **28** pre-period days with traffic
-- at least **14** post-period days
-- at least a **3:1** pre:post ratio
+- **28** pre-period days with traffic
+- **14** post-period days
+- a **3:1** pre:post ratio
 
-The model's standard error is floored at the binomial sampling error of the two periods, so
-it can never claim more precision than the raw counts support.
+The standard error is floored at the binomial sampling error of the two periods, so the model
+can never claim more precision than the raw counts support.
 
 ### What it does not do
 
-No control series, so this is a counterfactual forecast rather than causal identification.
-Two changes on the same metric within 14 days refuse each other. A change that created the
-events measuring it has no pre-period and is graded on a metric further away, with the skip
-stated in the output.
+No control series, so this is a counterfactual forecast, not causal identification. Two changes
+on the same metric within 14 days refuse each other. A change that created the events measuring
+it is graded on a metric further away, with the skip stated in the output.
 
 ---
 
@@ -297,8 +336,8 @@ stated in the output.
 Off by default. Opt in with `CHANGELOG_TELEMETRY=1`.
 
 Counts only: tools called, categories logged, verdicts returned. Never content, never metric
-values, never keys. With telemetry enabled and no `CHANGELOG_TELEMETRY_URL` set it is a
-documented no-op — no hosted service ships with this project.
+values, never keys. With no `CHANGELOG_TELEMETRY_URL` set it is a documented no-op. No hosted
+service ships with this project.
 
 ---
 
@@ -306,8 +345,8 @@ documented no-op — no hosted service ships with this project.
 
 ```bash
 npm install
-npm test          # 177 tests, no network
-npm run typecheck
+npm test          # 180 tests, no network
+npm run typecheck # covers src/ and test/
 npm run build
 ```
 

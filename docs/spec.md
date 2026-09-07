@@ -334,3 +334,24 @@ Also: the annotation log is paginated (an unpaginated read silently dropped ever
 the first page), `CHANGELOG_OPERATOR_HOSTS=""` now means "no patterns" rather than falling
 back to the defaults, and `npm run typecheck` covers `test/` — which immediately surfaced a
 stub that no longer matched its interface.
+
+## Proactivity and efficiency pass — 2026-09-07
+
+Driven by first real use. The operator had to explicitly ask the tool to look six months back.
+
+- **`DEFAULT_SINCE_DAYS = 180` silently dropped older changes.** Nothing in the output said a
+  cutoff had been applied, so a change logged 200 days ago simply did not exist. The default
+  is now the whole log, newest first; `since` only narrows.
+- **Changes too recent to grade now cost zero queries.** A change younger than
+  `MIN_POST_DAYS` cannot be graded by any query, so the pre-flight skips it before pass 1.
+  On the reference project this took a routine check from 3 PostHog queries to 0.
+- **Queries are memoized per run, keyed on the SQL.** Two changes resolving to the same metric
+  and window now fetch once.
+- **`log_change` returns the date the change becomes gradeable**, so nobody checks too early
+  and reads "still gathering data" as a failure.
+- **Output is grouped**: graded changes first (moved, then did not move, then cannot tell
+  yet), then a compact "still gathering data" block, then a single "next check worth running"
+  date. `totalLogged` is captured before the per-run cap, which it was not at first.
+
+The skill was rewritten to trigger on its own rather than on request, with explicit triggers
+for both tools and a statement that `since` is not needed to reach older changes.

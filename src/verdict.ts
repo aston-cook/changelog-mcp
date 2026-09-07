@@ -21,6 +21,13 @@ export const MIN_PRE_POST_RATIO = 3;
  */
 export const MEANINGFUL_FRACTION = 0.25;
 
+const DAY_MS = 86_400_000;
+
+/** The first day a change has enough post-period behind it to be worth grading. */
+export function gradeableOn(changeIso: string): string {
+  return new Date(Date.parse(changeIso) + MIN_POST_DAYS * DAY_MS).toISOString().slice(0, 10);
+}
+
 export interface VerdictInput {
   preDays: number;
   postDays: number;

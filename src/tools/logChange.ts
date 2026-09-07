@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CATEGORIES, encodeChange, decodeChange, isMalformed, type Category } from '../annotation.js';
 import type { PostHogClient } from '../posthog.js';
 import { counters, flush } from '../telemetry.js';
+import { gradeableOn } from '../verdict.js';
 
 export const logChangeShape = {
   summary: z
@@ -92,7 +93,12 @@ export async function handleLogChange(
     : '\n\nNo metric_hint was given, so check_changes will fall back to the default ladder for ' +
       'this category. Naming the funnel step this change touches improves the verdict.';
 
-  return `Logged change ${id} at ${date}.\n${content}${hint}`;
+  return (
+    `Logged change ${id} at ${date}.\n${content}\n\n` +
+    `Gradeable from ${gradeableOn(date)} — that is the earliest date with enough post-period ` +
+    `data for a verdict to mean anything. Checking before then returns "still gathering data".` +
+    hint
+  );
 }
 
 export function registerLogChange(server: McpServer, client: PostHogClient): void {
