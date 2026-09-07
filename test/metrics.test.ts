@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { LADDERS, resolveMetric, applyHint, eventsForLadder } from '../src/metrics.js';
+import {
+  LADDERS,
+  resolveMetric,
+  applyHint,
+  eventsForLadder,
+  mixedSource,
+} from '../src/metrics.js';
 
 const realVolumes = {
   $pageview: { pre: 11635, post: 646 },
@@ -135,5 +141,33 @@ describe('headroom', () => {
     );
     expect(r.chosen).toBeNull();
     expect(r.skipped[0].reason).toMatch(/too rare to resolve/);
+  });
+});
+
+describe('mixedSource', () => {
+  const m = { name: 'x', numerator: 'trial_created', denominator: 'signup_completed' };
+
+  it('flags a client denominator with a server numerator', () => {
+    expect(
+      mixedSource(m, {
+        signup_completed: { pre: 1, post: 1, lib: 'web' },
+        trial_created: { pre: 1, post: 1, lib: 'posthog-node' },
+      }),
+    ).toEqual({ from: 'web', to: 'posthog-node' });
+  });
+
+  it('says nothing when both legs come from the same SDK', () => {
+    expect(
+      mixedSource(m, {
+        signup_completed: { pre: 1, post: 1, lib: 'web' },
+        trial_created: { pre: 1, post: 1, lib: 'web' },
+      }),
+    ).toBeNull();
+  });
+
+  it('says nothing when the SDK is unknown', () => {
+    expect(
+      mixedSource(m, { signup_completed: { pre: 1, post: 1 }, trial_created: { pre: 1, post: 1 } }),
+    ).toBeNull();
   });
 });

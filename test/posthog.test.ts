@@ -7,6 +7,7 @@ const cfg: Config = {
   projectId: '1',
   host: 'https://us.posthog.com',
   operatorHostPatterns: [],
+  eventValidFrom: {},
 };
 
 const okResponse = (json: unknown) =>

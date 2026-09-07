@@ -12,6 +12,7 @@ const cfg: Config = {
   projectId: '1',
   host: 'h',
   operatorHostPatterns: ['localhost%', '%.vercel.app'],
+  eventValidFrom: {},
 };
 
 describe('operator exclusion', () => {
@@ -40,14 +41,14 @@ describe('operator exclusion', () => {
   });
 
   it('still produces valid SQL when no host patterns are configured', () => {
-    const sql = buildOperatorPersonFilter({ ...cfg, operatorHostPatterns: [] });
+    const sql = buildOperatorPersonFilter({ ...cfg, operatorHostPatterns: [], eventValidFrom: {} });
     expect(sql).toContain('properties.$operator = true');
     expect(sql).not.toContain('OR \n');
     expect(sql).not.toMatch(/\(\s*OR/);
   });
 
   it('escapes single quotes so a host pattern cannot break out of the literal', () => {
-    const sql = buildOperatorPersonFilter({ ...cfg, operatorHostPatterns: ["ev'il%"] });
+    const sql = buildOperatorPersonFilter({ ...cfg, operatorHostPatterns: ["ev'il%"], eventValidFrom: {} });
     expect(sql).toContain("'ev\\'il%'");
   });
 

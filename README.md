@@ -93,7 +93,8 @@ call `log_change` — and, more importantly, when not to.
 | `POSTHOG_PERSONAL_API_KEY` | *required* | `phx_` personal API key |
 | `POSTHOG_PROJECT_ID` | *required* | numeric project id |
 | `POSTHOG_HOST` | `https://us.posthog.com` | use `https://eu.posthog.com` for EU cloud |
-| `CHANGELOG_OPERATOR_HOSTS` | `localhost%,%.vercel.app` | comma-separated SQL LIKE patterns |
+| `CHANGELOG_OPERATOR_HOSTS` | `localhost%,%.vercel.app` | comma-separated SQL LIKE patterns; set to empty to disable |
+| `CHANGELOG_EVENT_VALID_FROM` | unset | `event:YYYY-MM-DD` pairs marking where each event's data becomes trustworthy |
 | `CHANGELOG_TELEMETRY` | unset (off) | `1` to opt in |
 | `CHANGELOG_TELEMETRY_URL` | unset | where counts go; without it telemetry is a no-op |
 
@@ -207,6 +208,49 @@ both `$operator` on events and `is_operator` on persons with no extra configurat
 
 ---
 
+## Data boundaries
+
+Analytics accumulate hard boundaries: an identity key that changed, a webhook subscribed
+late, a table migration. Reading a baseline across one produces a confident number built
+from data that does not mean what the column name says it means — the exact failure this
+tool exists to prevent, arriving through the back door.
+
+The tool ships with no knowledge of your history. Declare your boundaries:
+
+```
+CHANGELOG_EVENT_VALID_FROM=store_purchase_completed:2026-07-05,store_checkout_started:2026-07-05
+```
+
+Rows for those events before that date are excluded from every query — the series, the
+volumes check, and the usability decision. If that leaves too little clean history, the
+guard rails refuse a verdict rather than grade on the remainder, and the output names the
+boundary that clipped the window:
+
+```
+  bounded     history clipped to declared data boundaries: store_purchase_completed from 2026-07-05
+```
+
+A real example from the project this was built against: store purchases were keyed by email
+rather than by person id until 2026-07-05. Counting distinct persons across that line
+silently undercounts every purchase before it.
+
+## Capture sources
+
+`check_changes` samples `$lib` per event and warns when a metric's two legs were captured by
+different SDKs:
+
+```
+  mixed       legs captured by different SDKs (web -> posthog-node); the ratio is
+              comparable over time but the absolute rate is not a true rate
+```
+
+Ad blockers suppress client-side events and not server-side ones, so a client denominator
+with a server numerator inflates the rate. For a before/after comparison this largely
+cancels while the ad-block rate holds steady, which is why it is reported rather than
+refused — but do not read the absolute baseline as the true rate.
+
+---
+
 ## Method, honestly
 
 The verdict engine is an **interrupted time series**, not CausalImpact.
@@ -262,7 +306,7 @@ documented no-op — no hosted service ships with this project.
 
 ```bash
 npm install
-npm test          # 154 tests, no network
+npm test          # 177 tests, no network
 npm run typecheck
 npm run build
 ```

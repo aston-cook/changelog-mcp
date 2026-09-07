@@ -286,3 +286,51 @@ removed 25 people and 4,776 events, and the window is a year rather than 90 days
 
 The change is genuinely ungradeable today. Re-run after 2026-09-15 for the 14-day minimum;
 roughly 30 post-period days gets the resolution to about ±1.2pp.
+
+---
+
+## F9. Declared data boundaries (added 2026-09-07)
+
+AssertHired's own `analyzing-funnel-data` skill documents a boundary the tool would have
+read straight across: **store purchases were email-keyed, not person-id-keyed, until
+2026-07-05** (PR #145). The packaging ladder counts `uniq(person_id)` over
+`store_checkout_started -> store_purchase_completed` with a 365-day pre-window, so a
+packaging change logged today would have built its baseline from data where `person_id`
+does not link a purchase to a person.
+
+Nothing in F5's volume checks catches this: the events exist and have volume on both sides.
+Only the *meaning* of the key changed.
+
+**Decision:** `CHANGELOG_EVENT_VALID_FROM` declares `event:YYYY-MM-DD` boundaries. Rows
+before an event's boundary are excluded from the series query, the volumes query, and the
+usability decision. No project knowledge is hard-coded — the tool ships knowing nothing and
+the operator declares their own history.
+
+Two smaller findings from the same source:
+
+- **Capture sources are mixed on several ladder rungs.** `signup_completed` (web) ->
+  `trial_created` (posthog-node) and `store_checkout_started` (web) ->
+  `store_purchase_completed` (posthog-node) cross the client/server line. Ad blockers
+  suppress the client leg only, inflating the rate. For before/after this cancels while the
+  ad-block rate is stable, so `check_changes` samples `$lib` per event and reports the
+  mismatch rather than refusing.
+- **The May 2026 peak was a promo, not seasonality.** With a 365-day lookback it sits inside
+  the pre-period. The ITS treats it as an outlier, inflating residual variance and widening
+  intervals — the conservative direction, costing power rather than manufacturing findings.
+  No code change; worth knowing when a verdict returns softer than expected.
+
+## Repair pass — 2026-09-07
+
+Three defects found by auditing rather than by a failing test:
+
+- **`src/overlap.ts` was fully tested and never imported.** `checkChanges.ts` carried an
+  untested local duplicate. The tested module is now the one that runs.
+- **The per-run cap kept the OLDEST changes** (`slice(0, MAX)` on an ascending sort) while
+  reporting the remainder as "older change(s) not graded". Now keeps the most recent.
+- **Telemetry never flushed.** `flush()` had no caller, so opt-in counts accumulated and
+  were never sent. Both tools now count and flush.
+
+Also: the annotation log is paginated (an unpaginated read silently dropped everything past
+the first page), `CHANGELOG_OPERATOR_HOSTS=""` now means "no patterns" rather than falling
+back to the defaults, and `npm run typecheck` covers `test/` — which immediately surfaced a
+stub that no longer matched its interface.

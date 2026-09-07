@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  boundariesFor,
+  boundaryClause,
   buildSeriesQuery,
   buildVolumesQuery,
   fetchSeries,
@@ -15,6 +17,7 @@ const cfg: Config = {
   projectId: '1',
   host: 'h',
   operatorHostPatterns: ['localhost%'],
+  eventValidFrom: {},
 };
 const metric = { name: 'm', numerator: 'signup_completed', denominator: 'signup_started' };
 
@@ -125,5 +128,58 @@ describe('splitAt and totals', () => {
 
   it('sums both legs', () => {
     expect(totals(points)).toEqual({ numerator: 10, denominator: 100 });
+  });
+});
+
+describe('data boundaries', () => {
+  const bounded: Config = {
+    ...cfg,
+    eventValidFrom: { store_purchase_completed: '2026-07-05' },
+  };
+  const storeMetric = {
+    name: 'checkout to purchase',
+    numerator: 'store_purchase_completed',
+    denominator: 'store_checkout_started',
+  };
+
+  it('excludes rows for a guarded event before its boundary', () => {
+    const sql = buildSeriesQuery(bounded, storeMetric, '2025-09-01', '2026-09-07');
+    expect(sql).toContain("AND NOT (");
+    expect(sql).toContain(
+      "(event = 'store_purchase_completed' AND timestamp < toDateTime('2026-07-05 00:00:00'))",
+    );
+  });
+
+  it('leaves unguarded events on the same metric alone', () => {
+    const sql = buildSeriesQuery(bounded, storeMetric, '2025-09-01', '2026-09-07');
+    expect(sql).not.toContain("event = 'store_checkout_started' AND timestamp <");
+  });
+
+  it('adds nothing when no boundary applies', () => {
+    expect(boundaryClause(['a', 'b'], {})).toBe('');
+    expect(boundaryClause(['a'], undefined)).toBe('');
+  });
+
+  it('applies boundaries to the volumes query too, so usability is judged on clean data', () => {
+    const sql = buildVolumesQuery(
+      bounded,
+      ['store_purchase_completed', 'store_checkout_started'],
+      '2026-09-01T00:00:00Z',
+      '2025-09-01',
+      '2026-09-07',
+    );
+    expect(sql).toContain("AND NOT (");
+  });
+
+  it('names which events on a metric are bounded', () => {
+    expect(boundariesFor(storeMetric, bounded.eventValidFrom)).toEqual([
+      'store_purchase_completed',
+    ]);
+    expect(boundariesFor(storeMetric, {})).toEqual([]);
+  });
+
+  it('samples the capture SDK per event for the mixed-source check', () => {
+    const sql = buildVolumesQuery(cfg, ['a'], '2026-09-01T00:00:00Z', '2026-06-01', '2026-09-07');
+    expect(sql).toContain('any(properties.$lib)');
   });
 });

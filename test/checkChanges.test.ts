@@ -10,6 +10,7 @@ const cfg: Config = {
   projectId: '1',
   host: 'https://us.posthog.com',
   operatorHostPatterns: ['localhost%', '%.vercel.app'],
+  eventValidFrom: {},
 };
 
 const NOW = new Date('2026-09-06T00:00:00Z');
@@ -34,6 +35,8 @@ function ann(
 interface StubOpts {
   annotations: Annotation[];
   volumes: Record<string, [number, number]>;
+  /** event -> $lib, for the mixed-capture-source check */
+  libs?: Record<string, string>;
   /** rate(dayIndex, isPost) -> [numerator, denominator] */
   series?: (dayIso: string, isPost: boolean) => [number, number];
   changeDate?: string;
@@ -50,7 +53,14 @@ function makeClient(o: StubOpts) {
       return { results: [o.impact ?? [9, 312]] };
     }
     if (sql.includes('uniqIf(person_id, timestamp <')) {
-      return { results: Object.entries(o.volumes).map(([e, [pre, post]]) => [e, pre, post]) };
+      return {
+        results: Object.entries(o.volumes).map(([e, [pre, post]]) => [
+          e,
+          pre,
+          post,
+          o.libs?.[e] ?? 'web',
+        ]),
+      };
     }
     const bounds = [...sql.matchAll(/toDateTime\('(\d{4}-\d{2}-\d{2}) 00:00:00'\)/g)].map(
       (m) => m[1]!,
@@ -286,5 +296,111 @@ describe('check_changes', () => {
     await handleCheckChanges(c, cfg, {}, NOW);
     expect(snapshot().verdicts).toEqual({ 'did not move': 1 });
     expect(JSON.stringify(snapshot())).not.toContain('Secret summary');
+  });
+});
+
+describe('check_changes — log size and boundaries', () => {
+  it('grades the MOST RECENT changes when the log exceeds the per-run cap', async () => {
+    // 30 changes, 20 days apart so none overlap. The cap is 25.
+    const anns = Array.from({ length: 30 }, (_, i) =>
+      ann(
+        i + 1,
+        new Date(Date.parse('2026-09-01T00:00:00Z') - (29 - i) * 20 * DAY).toISOString(),
+        `change number ${i + 1}`,
+        'copy',
+      ),
+    );
+    const c = makeClient({ annotations: anns, volumes: FULL_VOLUMES });
+    const out = await handleCheckChanges(c, cfg, { since: '2024-01-01T00:00:00Z' }, NOW);
+
+    expect(out).toContain('change number 30');
+    expect(out).not.toMatch(/change number 1/);
+    expect(out).toMatch(/5 older change\(s\) not graded/);
+  });
+
+  it('pages through an annotation log longer than one page', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      ann(i + 1, '2026-06-01T00:00:00Z', `bulk ${i}`, 'copy'),
+    );
+    const page2 = [ann(999, '2026-06-01T00:00:00Z', 'on the second page', 'copy')];
+
+    const c = makeClient({ annotations: [], volumes: FULL_VOLUMES });
+    c.listAnnotations = vi.fn(async (o: { offset?: number }) =>
+      (o.offset ?? 0) === 0 ? page1 : page2,
+    ) as never;
+
+    const out = await handleCheckChanges(c, cfg, {}, NOW);
+    expect(c.listAnnotations).toHaveBeenCalledTimes(2);
+    expect(out).toContain('on the second page');
+  });
+
+  it('reports when history was clipped to a declared data boundary', async () => {
+    const bounded = { ...cfg, eventValidFrom: { store_purchase_completed: '2026-07-05' } };
+    const c = makeClient({
+      annotations: [ann(1, '2026-08-01T00:00:00Z', 'Split the bundle', 'packaging')],
+      volumes: {
+        ...FULL_VOLUMES,
+        store_checkout_started: [900, 300],
+        store_purchase_completed: [400, 140],
+      },
+      changeDate: '2026-08-01',
+    });
+    const out = await handleCheckChanges(c, bounded, {}, NOW);
+
+    expect(out).toMatch(/bounded\s+history clipped to declared data boundaries/);
+    expect(out).toContain('store_purchase_completed from 2026-07-05');
+  });
+
+  it('passes the boundary into every query it sends', async () => {
+    const bounded = { ...cfg, eventValidFrom: { store_purchase_completed: '2026-07-05' } };
+    const c = makeClient({
+      annotations: [ann(1, '2026-08-01T00:00:00Z', 'Split the bundle', 'packaging')],
+      volumes: {
+        ...FULL_VOLUMES,
+        store_checkout_started: [900, 300],
+        store_purchase_completed: [400, 140],
+      },
+      changeDate: '2026-08-01',
+    });
+    await handleCheckChanges(c, bounded, {}, NOW);
+
+    const touching = c.query.mock.calls.filter((call) =>
+      String(call[0]).includes('store_purchase_completed'),
+    );
+    expect(touching.length).toBeGreaterThan(0);
+    for (const call of touching) expect(call[0]).toContain("timestamp < toDateTime('2026-07-05");
+  });
+
+  it('warns when the two legs of a metric come from different SDKs', async () => {
+    const c = makeClient({
+      annotations: [ann(1, '2026-06-01T00:00:00Z', 'Cut Pro price', 'pricing', 'trial_created')],
+      volumes: {
+        ...FULL_VOLUMES,
+        paywall_viewed: [900, 300],
+        checkout_started: [300, 100],
+      },
+      libs: { signup_completed: 'web', trial_created: 'posthog-node' },
+    });
+    const out = await handleCheckChanges(c, cfg, {}, NOW);
+    expect(out).toMatch(/mixed\s+legs captured by different SDKs \(web -> posthog-node\)/);
+  });
+
+  it('stays quiet about capture sources when both legs match', async () => {
+    const c = makeClient({
+      annotations: [ann(1, '2026-06-01T00:00:00Z', 'Rewrote the hero', 'copy')],
+      volumes: FULL_VOLUMES,
+    });
+    const out = await handleCheckChanges(c, cfg, {}, NOW);
+    expect(out).not.toMatch(/mixed\s+legs/);
+  });
+
+  it('formats the resolution as a plus-or-minus range, not a signed number', async () => {
+    const c = makeClient({
+      annotations: [ann(1, '2026-06-01T00:00:00Z', 'Rewrote the hero', 'copy')],
+      volumes: FULL_VOLUMES,
+    });
+    const out = await handleCheckChanges(c, cfg, {}, NOW);
+    expect(out).toMatch(/can resolve \+\/-\d+\.\d\dpp/);
+    expect(out).not.toMatch(/can resolve \+\+/);
   });
 });

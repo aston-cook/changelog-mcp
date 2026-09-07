@@ -3,6 +3,36 @@ export interface Config {
   projectId: string;
   host: string;
   operatorHostPatterns: string[];
+  /**
+   * Earliest date each event's data can be trusted, as `event -> YYYY-MM-DD`.
+   *
+   * Analytics accumulate hard boundaries: an identity key that changed, a webhook added
+   * late, a migration that re-shaped a table. Reading across one silently produces a
+   * confident wrong number. Declare them and the tool refuses to look further back.
+   */
+  eventValidFrom: Record<string, string>;
+}
+
+const VALID_FROM_ENTRY = /^([A-Za-z0-9_$.\-]+):(\d{4}-\d{2}-\d{2})$/;
+
+export function parseEventValidFrom(raw: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw?.trim()) return out;
+
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const m = VALID_FROM_ENTRY.exec(trimmed);
+    if (!m) {
+      throw new Error(
+        `CHANGELOG_EVENT_VALID_FROM entry "${trimmed}" is malformed. ` +
+          `Expected comma-separated "event_name:YYYY-MM-DD" pairs, ` +
+          `e.g. "store_purchase_completed:2026-07-05,store_checkout_started:2026-07-05".`,
+      );
+    }
+    out[m[1]!] = m[2]!;
+  }
+  return out;
 }
 
 const KEY_PATTERN = /phx_[A-Za-z0-9_-]+/g;
@@ -43,13 +73,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  // An explicitly empty value means "no host patterns", not "fall back to the defaults" —
+  // otherwise there is no way to turn host-based operator detection off.
+  const rawHosts = env.CHANGELOG_OPERATOR_HOSTS;
+  const hosts = rawHosts === undefined ? 'localhost%,%.vercel.app' : rawHosts;
+
   return {
     apiKey,
     projectId,
     host: (env.POSTHOG_HOST?.trim() || 'https://us.posthog.com').replace(/\/+$/, ''),
-    operatorHostPatterns: (env.CHANGELOG_OPERATOR_HOSTS?.trim() || 'localhost%,%.vercel.app')
+    operatorHostPatterns: hosts
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    eventValidFrom: parseEventValidFrom(env.CHANGELOG_EVENT_VALID_FROM),
   };
 }

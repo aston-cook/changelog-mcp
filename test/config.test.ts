@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { redact, loadConfig } from '../src/config.js';
+import { redact, loadConfig, parseEventValidFrom } from '../src/config.js';
 
 describe('redact', () => {
   it('removes the api key from arbitrary text', () => {
@@ -54,5 +54,58 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ POSTHOG_PERSONAL_API_KEY: 'phx_key' } as NodeJS.ProcessEnv)).toThrow(
       /POSTHOG_PROJECT_ID is not set/,
     );
+  });
+});
+
+describe('parseEventValidFrom', () => {
+  it('parses comma-separated event:date pairs', () => {
+    expect(
+      parseEventValidFrom('store_purchase_completed:2026-07-05,store_checkout_started:2026-07-05'),
+    ).toEqual({
+      store_purchase_completed: '2026-07-05',
+      store_checkout_started: '2026-07-05',
+    });
+  });
+
+  it('returns empty for unset or blank', () => {
+    expect(parseEventValidFrom(undefined)).toEqual({});
+    expect(parseEventValidFrom('   ')).toEqual({});
+  });
+
+  it('tolerates whitespace around entries', () => {
+    expect(parseEventValidFrom(' a:2026-01-01 , b:2026-02-02 ')).toEqual({
+      a: '2026-01-01',
+      b: '2026-02-02',
+    });
+  });
+
+  it('refuses a malformed entry rather than silently ignoring a data boundary', () => {
+    expect(() => parseEventValidFrom('store_purchase_completed')).toThrow(/malformed/);
+    expect(() => parseEventValidFrom('evt:07-05-2026')).toThrow(/YYYY-MM-DD/);
+  });
+});
+
+describe('operator host patterns', () => {
+  const base = { POSTHOG_PERSONAL_API_KEY: 'phx_key', POSTHOG_PROJECT_ID: '1' };
+
+  it('treats an explicitly empty value as "no host patterns", not as unset', () => {
+    const cfg = loadConfig({ ...base, CHANGELOG_OPERATOR_HOSTS: '' } as NodeJS.ProcessEnv);
+    expect(cfg.operatorHostPatterns).toEqual([]);
+  });
+
+  it('accepts custom patterns', () => {
+    const cfg = loadConfig({
+      ...base,
+      CHANGELOG_OPERATOR_HOSTS: 'localhost%,staging.example.com',
+    } as NodeJS.ProcessEnv);
+    expect(cfg.operatorHostPatterns).toEqual(['localhost%', 'staging.example.com']);
+  });
+
+  it('reads data boundaries from the environment', () => {
+    const cfg = loadConfig({
+      ...base,
+      CHANGELOG_EVENT_VALID_FROM: 'store_purchase_completed:2026-07-05',
+    } as NodeJS.ProcessEnv);
+    expect(cfg.eventValidFrom).toEqual({ store_purchase_completed: '2026-07-05' });
   });
 });

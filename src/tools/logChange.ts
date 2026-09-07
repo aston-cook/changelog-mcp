@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CATEGORIES, encodeChange, decodeChange, isMalformed, type Category } from '../annotation.js';
 import type { PostHogClient } from '../posthog.js';
-import { counters } from '../telemetry.js';
+import { counters, flush } from '../telemetry.js';
 
 export const logChangeShape = {
   summary: z
@@ -115,8 +115,11 @@ export function registerLogChange(server: McpServer, client: PostHogClient): voi
         openWorldHint: true,
       },
     },
-    async (args) => ({
-      content: [{ type: 'text' as const, text: await handleLogChange(client, args) }],
-    }),
+    async (args) => {
+      counters.toolCalled('log_change');
+      const text = await handleLogChange(client, args);
+      await flush();
+      return { content: [{ type: 'text' as const, text }] };
+    },
   );
 }

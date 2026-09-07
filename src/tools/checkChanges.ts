@@ -10,13 +10,28 @@ import {
   type ChangeRecord,
   type MalformedRecord,
 } from '../annotation.js';
-import { LADDERS, applyHint, eventsForLadder, resolveMetric, type Metric } from '../metrics.js';
-import { fetchSeries, fetchVolumes, splitAt, totals, type DayPoint } from '../series.js';
+import {
+  LADDERS,
+  applyHint,
+  eventsForLadder,
+  mixedSource,
+  resolveMetric,
+  type Metric,
+} from '../metrics.js';
+import { findOverlaps } from '../overlap.js';
+import {
+  boundariesFor,
+  fetchSeries,
+  fetchVolumes,
+  splitAt,
+  totals,
+  type QueryRunner,
+} from '../series.js';
 import { operatorImpact, type OperatorImpact } from '../operator.js';
 import { fitIts, SingularMatrixError, type ItsResult } from '../stats/its.js';
 import { relative } from '../stats/mde.js';
 import { decide, MIN_POST_DAYS, MIN_PRE_POST_RATIO, type Decision } from '../verdict.js';
-import { counters } from '../telemetry.js';
+import { counters, flush } from '../telemetry.js';
 
 const DAY_MS = 86_400_000;
 
@@ -70,11 +85,13 @@ interface Graded {
   its: ItsResult | null;
   truncatedBy: number | null;
   trimmedForRatio: boolean;
+  boundedEvents: string[];
+  mixed: { from: string; to: string } | null;
   unresolvable: string | null;
 }
 
 export async function handleCheckChanges(
-  client: Pick<PostHogClient, 'listAnnotations' | 'query'>,
+  client: Pick<PostHogClient, 'listAnnotations'> & QueryRunner,
   cfg: Config,
   args: CheckChangesArgs,
   now: Date = new Date(),
@@ -84,7 +101,7 @@ export async function handleCheckChanges(
     : now.getTime() - DEFAULT_SINCE_DAYS * DAY_MS;
 
   // ---- read the log -------------------------------------------------------------------
-  const annotations = await client.listAnnotations({ limit: 200 });
+  const annotations = await fetchAllAnnotations(client);
   const malformed: MalformedRecord[] = [];
   let changes: ChangeRecord[] = [];
 
@@ -102,7 +119,7 @@ export async function handleCheckChanges(
 
   changes.sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
   const truncatedCount = Math.max(0, changes.length - MAX_CHANGES);
-  changes = changes.slice(0, MAX_CHANGES);
+  changes = changes.slice(-MAX_CHANGES); // keep the most recent, still in ascending order
 
   if (changes.length === 0) {
     return renderEmpty(malformed, args);
@@ -111,6 +128,7 @@ export async function handleCheckChanges(
   // ---- pass 1: resolve each change to its closest usable metric ------------------------
   const resolved = new Map<number, Metric | null>();
   const skippedByChange = new Map<number, { metric: Metric; reason: string }[]>();
+  const volumesByChange = new Map<number, Awaited<ReturnType<typeof fetchVolumes>>>();
 
   for (const c of changes) {
     const ladder = applyHint(LADDERS[c.category], c.metricHint);
@@ -125,6 +143,7 @@ export async function handleCheckChanges(
       preStart,
       windowEnd,
     );
+    volumesByChange.set(c.annotationId!, volumes);
     const r = resolveMetric(ladder, volumes);
     resolved.set(c.annotationId!, r.chosen);
     skippedByChange.set(c.annotationId!, r.skipped);
@@ -133,7 +152,11 @@ export async function handleCheckChanges(
   // ---- overlap: same metric, too close together to separate ---------------------------
   const metricNames = new Map<number, string>();
   for (const [id, m] of resolved) if (m) metricNames.set(id, m.name);
-  const overlaps = findOverlapsLocal(changes, metricNames, MIN_POST_DAYS);
+  const overlaps = findOverlaps(
+    changes.map((c) => ({ annotationId: c.annotationId!, date: c.date })),
+    metricNames,
+    MIN_POST_DAYS,
+  );
 
   // ---- pass 2: grade -------------------------------------------------------------------
   const graded: Graded[] = [];
@@ -226,6 +249,8 @@ export async function handleCheckChanges(
       its,
       truncatedBy: laterSameMetric ? laterSameMetric.annotationId! : null,
       trimmedForRatio,
+      boundedEvents: boundariesFor(metric, cfg.eventValidFrom),
+      mixed: mixedSource(metric, volumesByChange.get(id) ?? {}),
       unresolvable: null,
     });
   }
@@ -261,36 +286,33 @@ function blank(
     its: null,
     truncatedBy: null,
     trimmedForRatio: false,
+    boundedEvents: [],
+    mixed: null,
     unresolvable: reason,
   };
 }
 
-function findOverlapsLocal(
-  changes: ChangeRecord[],
-  metricNames: Map<number, string>,
-  windowDays: number,
-): Map<number, number[]> {
-  const out = new Map<number, number[]>();
-  for (const c of changes) out.set(c.annotationId!, []);
-  for (let i = 0; i < changes.length; i++) {
-    for (let j = i + 1; j < changes.length; j++) {
-      const a = changes[i]!;
-      const b = changes[j]!;
-      const ma = metricNames.get(a.annotationId!);
-      const mb = metricNames.get(b.annotationId!);
-      if (!ma || !mb || ma !== mb) continue;
-      if (Math.abs(daysBetween(a.date, b.date)) >= windowDays) continue;
-      out.get(a.annotationId!)!.push(b.annotationId!);
-      out.get(b.annotationId!)!.push(a.annotationId!);
-    }
+// ---- rendering -------------------------------------------------------------------------
+
+const ANNOTATION_PAGE = 100;
+const ANNOTATION_MAX = 1000;
+
+/** The log outgrows one page quickly; an unpaginated read silently drops the oldest changes. */
+async function fetchAllAnnotations(
+  client: Pick<PostHogClient, 'listAnnotations'>,
+): Promise<Awaited<ReturnType<PostHogClient['listAnnotations']>>> {
+  const out: Awaited<ReturnType<PostHogClient['listAnnotations']>> = [];
+  for (let offset = 0; offset < ANNOTATION_MAX; offset += ANNOTATION_PAGE) {
+    const page = await client.listAnnotations({ limit: ANNOTATION_PAGE, offset });
+    out.push(...page);
+    if (page.length < ANNOTATION_PAGE) break;
   }
   return out;
 }
 
-// ---- rendering -------------------------------------------------------------------------
-
 const pct = (x: number): string => `${(x * 100).toFixed(2)}%`;
 const pp = (x: number): string => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(2)}pp`;
+const ppRange = (x: number): string => `+/-${(Math.abs(x) * 100).toFixed(2)}pp`;
 
 function renderEmpty(malformed: MalformedRecord[], args: CheckChangesArgs): string {
   const filter = args.category ? ` in category "${args.category}"` : '';
@@ -367,7 +389,7 @@ function renderOne(g: Graded, impact: OperatorImpact, cfg: Config): string {
       `  (${pp(g.postRate - g.preRate)}, ${relative(g.postRate - g.preRate, g.preRate).toFixed(0)}% relative)`,
   );
   lines.push(
-    `  resolution  can resolve ${pp(d.detail.mde).replace('+', '+/-')} at n=${g.nPre} pre / ${g.nPost} post`,
+    `  resolution  can resolve ${ppRange(d.detail.mde)} at n=${g.nPre} pre / ${g.nPost} post`,
   );
 
   if (g.its) {
@@ -382,6 +404,18 @@ function renderOne(g: Graded, impact: OperatorImpact, cfg: Config): string {
 
   if (g.truncatedBy !== null) {
     lines.push(`  truncated   post period ends at change ${g.truncatedBy} on the same metric`);
+  }
+
+  if (g.boundedEvents.length) {
+    const parts = g.boundedEvents.map((e) => `${e} from ${cfg.eventValidFrom[e]}`).join(', ');
+    lines.push(`  bounded     history clipped to declared data boundaries: ${parts}`);
+  }
+
+  if (g.mixed) {
+    lines.push(
+      `  mixed       legs captured by different SDKs (${g.mixed.from} -> ${g.mixed.to}); ` +
+        `the ratio is comparable over time but the absolute rate is not a true rate`,
+    );
   }
 
   if (g.trimmedForRatio) {
@@ -425,9 +459,9 @@ export function registerCheckChanges(
     },
     async (args) => {
       counters.toolCalled('check_changes');
-      return {
-        content: [{ type: 'text' as const, text: await handleCheckChanges(client, cfg, args) }],
-      };
+      const text = await handleCheckChanges(client, cfg, args);
+      await flush();
+      return { content: [{ type: 'text' as const, text }] };
     },
   );
 }

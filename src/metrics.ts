@@ -68,7 +68,22 @@ export const SATURATION_MAX = 0.9;
 /** Below this, the rate is so rare that a window of any realistic length is pure noise. */
 export const NEAR_ZERO_MIN = 0.002;
 
-export type Volumes = Record<string, { pre: number; post: number }>;
+export type Volumes = Record<string, { pre: number; post: number; lib?: string }>;
+
+/**
+ * Whether the two legs of a metric were captured by different SDKs.
+ *
+ * A client-side denominator with a server-side numerator inflates the rate, because
+ * ad blockers suppress the client leg and not the server one. For a before/after comparison
+ * this largely cancels while the ad-block rate holds steady, so it is reported rather than
+ * refused — but the absolute baseline should not be read as the true rate.
+ */
+export function mixedSource(m: Metric, volumes: Volumes): { from: string; to: string } | null {
+  const a = volumes[m.denominator]?.lib;
+  const b = volumes[m.numerator]?.lib;
+  if (!a || !b || a === b) return null;
+  return { from: a, to: b };
+}
 
 export interface SkippedMetric {
   metric: Metric;

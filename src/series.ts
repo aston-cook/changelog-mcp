@@ -18,12 +18,47 @@ export function toHogDateTime(iso: string): string {
 }
 
 /**
+ * Drops rows for any event read before the date its data can be trusted.
+ *
+ * A boundary is a fact about the project's history, not about the change being graded:
+ * an identity key that changed, a webhook subscribed late, a migration. Reading across one
+ * produces a baseline built from data that does not mean what the column says it means.
+ */
+export function boundaryClause(
+  events: string[],
+  validFrom: Record<string, string> | undefined,
+): string {
+  if (!validFrom) return '';
+  const guarded = events.filter((e) => validFrom[e]);
+  if (guarded.length === 0) return '';
+
+  const clauses = guarded
+    .map(
+      (e) =>
+        `(event = ${sqlString(e)} AND timestamp < toDateTime(${sqlString(validFrom[e]! + ' 00:00:00')}))`,
+    )
+    .join('\n           OR ');
+
+  return `\n  AND NOT (\n           ${clauses}\n          )`;
+}
+
+/** Events on this metric whose usable history starts later than the requested window. */
+export function boundariesFor(
+  m: Metric,
+  validFrom: Record<string, string> | undefined,
+): string[] {
+  if (!validFrom) return [];
+  return [m.numerator, m.denominator].filter((e) => validFrom[e]);
+}
+
+/**
  * Daily numerator and denominator for one metric, with operator persons removed from BOTH
  * legs. Counts distinct persons rather than events: one operator refreshing a checkout page
  * forty times must not move a rate.
  */
 export function buildSeriesQuery(cfg: Config, m: Metric, fromDate: string, toDate: string): string {
-  const events = [...new Set([m.numerator, m.denominator])].map(sqlString).join(', ');
+  const events = [...new Set([m.numerator, m.denominator])];
+  const list = events.map(sqlString).join(', ');
   return `
 SELECT
     toDate(timestamp)                                      AS day,
@@ -32,8 +67,8 @@ SELECT
 FROM events
 WHERE timestamp >= toDateTime(${sqlString(fromDate + ' 00:00:00')})
   AND timestamp <  toDateTime(${sqlString(toDate + ' 00:00:00')})
-  AND event IN (${events})
-  AND person_id NOT IN (${buildOperatorPersonFilter(cfg)})
+  AND event IN (${list})
+  AND person_id NOT IN (${buildOperatorPersonFilter(cfg)})${boundaryClause(events, cfg.eventValidFrom)}
 GROUP BY day
 ORDER BY day
 LIMIT 500`.trim();
@@ -55,9 +90,9 @@ export async function fetchSeries(
 }
 
 /**
- * Distinct persons per event, split pre/post at the change instant, operator-excluded.
- * One query answers "does this metric have volume on both sides of the change" for the whole
- * ladder at once.
+ * Distinct persons per event, split pre/post at the change instant, operator-excluded, plus
+ * a sample of the SDK that sent each event. One query answers "does this metric have volume
+ * on both sides" for the whole ladder, and "are both legs measured the same way".
  */
 export function buildVolumesQuery(
   cfg: Config,
@@ -71,12 +106,13 @@ export function buildVolumesQuery(
 SELECT
     event,
     uniqIf(person_id, timestamp <  toDateTime(${cut})) AS pre,
-    uniqIf(person_id, timestamp >= toDateTime(${cut})) AS post
+    uniqIf(person_id, timestamp >= toDateTime(${cut})) AS post,
+    any(properties.$lib)                               AS lib
 FROM events
 WHERE timestamp >= toDateTime(${sqlString(fromDate + ' 00:00:00')})
   AND timestamp <  toDateTime(${sqlString(toDate + ' 00:00:00')})
   AND event IN (${events.map(sqlString).join(', ')})
-  AND person_id NOT IN (${buildOperatorPersonFilter(cfg)})
+  AND person_id NOT IN (${buildOperatorPersonFilter(cfg)})${boundaryClause(events, cfg.eventValidFrom)}
 GROUP BY event
 LIMIT 500`.trim();
 }
@@ -92,7 +128,11 @@ export async function fetchVolumes(
   const r = await client.query(buildVolumesQuery(cfg, events, changeIso, fromDate, toDate));
   const out: Volumes = {};
   for (const row of r.results) {
-    out[String(row[0])] = { pre: Number(row[1] ?? 0), post: Number(row[2] ?? 0) };
+    out[String(row[0])] = {
+      pre: Number(row[1] ?? 0),
+      post: Number(row[2] ?? 0),
+      lib: row[3] == null ? undefined : String(row[3]),
+    };
   }
   return out;
 }
