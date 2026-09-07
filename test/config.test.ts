@@ -23,12 +23,12 @@ describe('redact', () => {
 });
 
 describe('loadConfig', () => {
-  const good = { POSTHOG_PERSONAL_API_KEY: 'phx_key', POSTHOG_PROJECT_ID: '435332' };
+  const good = { POSTHOG_PERSONAL_API_KEY: 'phx_key', POSTHOG_PROJECT_ID: '12345' };
 
   it('reads key, project and default host', () => {
     const cfg = loadConfig(good as NodeJS.ProcessEnv);
     expect(cfg.apiKey).toBe('phx_key');
-    expect(cfg.projectId).toBe('435332');
+    expect(cfg.projectId).toBe('12345');
     expect(cfg.host).toBe('https://us.posthog.com');
   });
 

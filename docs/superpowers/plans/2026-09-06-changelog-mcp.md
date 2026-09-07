@@ -1302,7 +1302,7 @@ State plainly what `$host` catches without this and what it misses.
 - [ ] **Step 2: Run the live test against the Sept 1 onboarding change**
 
 ```bash
-POSTHOG_PROJECT_ID=435332 node dist/index.js   # via the MCP client
+POSTHOG_PROJECT_ID=12345 node dist/index.js   # via the MCP client
 ```
 
 Expected, from Phase 0: `cannot tell yet`. The closest metric is skipped because

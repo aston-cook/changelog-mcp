@@ -32,8 +32,8 @@ It starts with `phx_`. A `phc_` project key is a different thing and will not wo
 It is the number in your PostHog URL:
 
 ```
-https://us.posthog.com/project/435332
-                               ^^^^^^
+https://us.posthog.com/project/12345
+                               ^^^^^
 ```
 
 **3. Add it to your AI tool**
@@ -49,7 +49,7 @@ https://us.posthog.com/project/435332
       "args": ["-y", "changelog-mcp"],
       "env": {
         "POSTHOG_PERSONAL_API_KEY": "${POSTHOG_PERSONAL_API_KEY}",
-        "POSTHOG_PROJECT_ID": "435332"
+        "POSTHOG_PROJECT_ID": "12345"
       }
     }
   }
@@ -79,7 +79,7 @@ Put the key itself in `.claude/settings.local.json`, which is gitignored:
       "args": ["-y", "changelog-mcp"],
       "env": {
         "POSTHOG_PERSONAL_API_KEY": "phx_your_key_here",
-        "POSTHOG_PROJECT_ID": "435332"
+        "POSTHOG_PROJECT_ID": "12345"
       }
     }
   }

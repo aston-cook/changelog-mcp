@@ -1,7 +1,7 @@
 # changelog — Specification
 
-**Status:** Phase 0 complete, verified against primary sources and against the AssertHired
-PostHog project (id 435332) on 2026-09-06.
+**Status:** Phase 0 complete, verified against primary sources and against a real
+reference project (PostHog, id 12345) on 2026-09-06.
 
 ## Problem
 
@@ -41,7 +41,7 @@ The two servers coexist without conflict — both write to the same annotation s
 
 ### F2. Server-side events are classified as bot traffic
 
-In the AssertHired project, these events are sent from `posthog-node` with no user agent:
+In the reference project, these events are sent from `posthog-node` with no user agent:
 
     trial_created, trial_converted, payment_failed,
     subscription_renewed, store_purchase_completed
@@ -64,7 +64,7 @@ contains `HeadlessChrome`. Blocked events are never sent, so they cannot be filt
 afterwards. Confirmed: `Automation/headless_browser` is 8 events / 5 people over 90 days.
 
 `$browser_type` (values `bot` / `browser`) exists only if the app sets
-`opt_out_useragent_filter: true` in posthog-js. AssertHired does not.
+`opt_out_useragent_filter: true` in posthog-js. The reference project does not.
 
 **Decision:** do not depend on webdriver or `$browser_type`. Use `$host` plus an explicit
 opt-in flag.
@@ -81,7 +81,7 @@ Last 90 days, `store_checkout_started` → `store_purchase_completed`:
 
 Same shape as the "40 checkouts, zero payments" incident that drove a price cut. None of the
 47 are flagged as bots — they are real headed browsers on `localhost:3000`–`localhost:4013`
-and `asserthired.vercel.app`.
+and `myapp.vercel.app`.
 
 **Decision:** the operator signal is `$host`, propagated to the person. Works retroactively
 on existing data with zero instrumentation. An explicit flag closes the remaining gap
@@ -117,7 +117,7 @@ rather than cited as doctrine.
 
 ### F7. Measured baseline, and the resulting resolution limits
 
-Last 90 days ending 2026-09-06, AssertHired:
+Last 90 days ending 2026-09-06, the reference project:
 
 | measure                        | value          |
 |--------------------------------|----------------|
@@ -291,7 +291,7 @@ roughly 30 post-period days gets the resolution to about ±1.2pp.
 
 ## F9. Declared data boundaries (added 2026-09-07)
 
-AssertHired's own `analyzing-funnel-data` skill documents a boundary the tool would have
+The reference project's own analytics playbook documents a boundary the tool would have
 read straight across: **store purchases were email-keyed, not person-id-keyed, until
 2026-07-05** (PR #145). The packaging ladder counts `uniq(person_id)` over
 `store_checkout_started -> store_purchase_completed` with a 365-day pre-window, so a
